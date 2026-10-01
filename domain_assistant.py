@@ -244,16 +244,59 @@ class TextGenerator(Protocol):
 
 class OpenAIGenerator:
     def __init__(self, max_output_tokens: int = 300) -> None:
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        self.model = os.getenv("OPENAI_MODEL", "").strip()
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is missing from .env")
+        gemini_key = (
+            os.getenv("GEMINI_API_KEY", "").strip()
+            or os.getenv("GOOGLE_API_KEY", "").strip()
+        )
+        openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if gemini_key:
+            self.provider = "gemini"
+            self.model = (
+                os.getenv("GEMINI_MODEL", "").strip()
+                or os.getenv("LLM_MODEL", "").strip()
+                or "gemini-3.1-flash-lite"
+            )
+            self.client = OpenAI(
+                api_key=gemini_key,
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            )
+        elif openai_key:
+            self.provider = "openai"
+            self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
+            self.client = OpenAI(api_key=openai_key)
+        else:
+            raise RuntimeError(
+                "GEMINI_API_KEY or OPENAI_API_KEY is missing from .env"
+            )
         if not self.model:
-            raise RuntimeError("OPENAI_MODEL is missing from .env")
-        self.client = OpenAI(api_key=api_key)
+            raise RuntimeError(f"{self.provider.upper()} model is missing from .env")
         self.max_output_tokens = max_output_tokens
 
     def generate(self, prompt: str) -> str:
+        last_error: OpenAIError | None = None
+        for attempt in range(5):
+            try:
+                return self._generate_once(prompt)
+            except OpenAIError as exc:
+                last_error = exc
+                if attempt == 4:
+                    break
+                time.sleep(2**attempt)
+        raise RuntimeError("Generation failed after 5 attempts") from last_error
+
+    def _generate_once(self, prompt: str) -> str:
+        if self.provider == "gemini":
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=self.max_output_tokens,
+            )
+            answer = (response.choices[0].message.content or "").strip()
+            if not answer:
+                raise RuntimeError("Gemini returned an empty answer")
+            return answer
+
         response = self.client.responses.create(
             model=self.model,
             input=prompt,
